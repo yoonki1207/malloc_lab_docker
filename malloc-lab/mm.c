@@ -56,15 +56,36 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
-    int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *p = mem_sbrk(newsize);
-    if (p == (void *)-1)
-        return NULL;
-    else
-    {
-        *(size_t *)p = size;
-        return (void *)((char *)p + SIZE_T_SIZE);
+    /* Implicit Free List - First fit */
+    // 8의 배수로 재설정한다.
+    int newsize = ALIGN(size + SIZE_T_SIZE); // size(payload) + SIZE_T_SIZE(header)
+    
+    // find available freed block
+    void *p = mem_heap_lo();
+    // 끝에 도달할 때 까지, freed block이면서 해당 블록이 할당될 사이즈보다 크거나 같을때까지 반복
+    while(p <= mem_heap_hi() && ((*(size_t *)p & 1) || (*(size_t *)p & ~0x7) < (size_t)newsize)) {
+        p = (void *)((char *)p + (*(size_t *)p & ~0x7)); // block jump
     }
+    
+    if(p > mem_heap_hi()) {
+        // 가용 가능한 블럭을 못 찾으면
+        p = mem_sbrk(newsize); // mem_brk을 newsize만큼 increase시킨다. 시작 지점 반환
+        if (p == (void *)-1)
+            return NULL;
+        else
+        {
+            *(size_t *)p = newsize | 1; // size를 넣는다. | allocated flag를 넣는다. (size는 8의 배수라 flag와 겹치지 않음을 이용)
+            return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
+        }
+    } else {
+        size_t prev_size = *(size_t *)p & ~0x7; // freed 블록 사이즈 계산
+        *(size_t *)p = newsize | 1; // size를 넣는다. | allocated flag를 넣는다. (size는 8의 배수라 flag와 겹치지 않음을 이용)
+        if(prev_size > newsize) {
+            void* next_p = (char *)p + newsize;
+            *(size_t *)next_p = (prev_size - newsize);
+        }
+        return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
+    }  
 }
 
 /*
@@ -72,6 +93,20 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+    if(ptr == NULL) return;
+    ptr = ((char*)ptr - SIZE_T_SIZE); // 포인터를 뒤로 가서 header를 가리키기
+
+    size_t size = *(size_t *)ptr = *(size_t *)ptr & ~1; // flag 해제
+
+    void* nextPtr = (char *)ptr + size; // 다음 블록 시작 지점
+
+    if(nextPtr > mem_heap_hi()) return;
+
+    if((*(size_t *)nextPtr & 1) == 0) {
+
+        size_t nextSize = *(size_t *)nextPtr;
+        *(size_t *)ptr = (size + nextSize);
+    }
 }
 
 /*
@@ -83,12 +118,13 @@ void *mm_realloc(void *ptr, size_t size)
     void *newptr;
     size_t copySize;
 
+
+    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE) & ~0x7;
+    if (size < copySize)
+        copySize = size;
     newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
