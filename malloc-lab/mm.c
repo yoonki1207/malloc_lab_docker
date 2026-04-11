@@ -42,6 +42,31 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
+/* is allocated block */ 
+#define ALLOCATED(ptr) (*(size_t *)ptr & 1)
+
+/* get block size */
+#define GETBLOCKSIZE(ptr) (*(size_t *)ptr & ~0x7)
+
+/* get header pointer with footer pointer */
+#define GETHEADER(ptr) ((char *)ptr - GETBLOCKSIZE(ptr) + SIZE_T_SIZE)
+
+/* get footer pointer with header pointer */
+#define GETFOOTER(ptr) ((char *)ptr + GETBLOCKSIZE(ptr) - SIZE_T_SIZE)
+
+/* get header pointer for next block with current header pointer*/
+#define GETNEXTBLOCK(ptr) ((char *)ptr + GETBLOCKSIZE(ptr))
+
+/* set block size at header and footer */
+inline static void set_blocksize(void* ptr, size_t size) {
+    *(size_t *)ptr = *(size_t *)((char *)ptr + size - SIZE_T_SIZE) = size;
+}
+
+/* set block size and set allocated flag*/
+inline static void set_blocksize_a(void* ptr, size_t size) {
+    *(size_t *)ptr = *(size_t *)((char *)ptr + size - SIZE_T_SIZE) = size | 1;
+}
+
 /*
  * mm_init - initialize the malloc package.
  */
@@ -56,15 +81,15 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
-    /* Implicit Free List - First fit */
+    /* Implicit Free List + Bidirection - First fit */
     // 8의 배수로 재설정한다.
-    int newsize = ALIGN(size + SIZE_T_SIZE); // size(payload) + SIZE_T_SIZE(header)
+    int newsize = ALIGN(size + SIZE_T_SIZE*2); // size(payload) + SIZE_T_SIZE(header) + SIZE_T_SIZE(footer)
     
     // find available freed block
     void *p = mem_heap_lo();
     // 끝에 도달할 때 까지, freed block이면서 해당 블록이 할당될 사이즈보다 크거나 같을때까지 반복
     while(p <= mem_heap_hi() && ((*(size_t *)p & 1) || (*(size_t *)p & ~0x7) < (size_t)newsize)) {
-        p = (void *)((char *)p + (*(size_t *)p & ~0x7)); // block jump
+        p = GETNEXTBLOCK(p); // block jump
     }
     
     if(p > mem_heap_hi()) {
@@ -74,15 +99,15 @@ void *mm_malloc(size_t size)
             return NULL;
         else
         {
-            *(size_t *)p = newsize | 1; // size를 넣는다. | allocated flag를 넣는다. (size는 8의 배수라 flag와 겹치지 않음을 이용)
+            set_blocksize_a(p, newsize);
             return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
         }
     } else {
         size_t prev_size = *(size_t *)p & ~0x7; // freed 블록 사이즈 계산
-        *(size_t *)p = newsize | 1; // size를 넣는다. | allocated flag를 넣는다. (size는 8의 배수라 flag와 겹치지 않음을 이용)
+        set_blocksize_a(p, newsize);
         if(prev_size > newsize) {
             void* next_p = (char *)p + newsize;
-            *(size_t *)next_p = (prev_size - newsize);
+            set_blocksize(next_p, prev_size - newsize);
         }
         return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
     }  
@@ -96,16 +121,30 @@ void mm_free(void *ptr)
     if(ptr == NULL) return;
     ptr = ((char*)ptr - SIZE_T_SIZE); // 포인터를 뒤로 가서 header를 가리키기
 
-    size_t size = *(size_t *)ptr = *(size_t *)ptr & ~1; // flag 해제
+    size_t size = GETBLOCKSIZE(ptr);
+    void* prevPtr = (size_t *)ptr - 1; // 이전 블록 footer 
 
     void* nextPtr = (char *)ptr + size; // 다음 블록 시작 지점
 
-    if(nextPtr > mem_heap_hi()) return;
-
-    if((*(size_t *)nextPtr & 1) == 0) {
-
-        size_t nextSize = *(size_t *)nextPtr;
-        *(size_t *)ptr = (size + nextSize);
+    if(nextPtr > mem_heap_hi()) {
+        if(ALLOCATED(prevPtr) == 0) {
+            *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = size + GETBLOCKSIZE(prevPtr);
+        } else {
+            *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
+        }
+        return;
+    }
+    if(ALLOCATED(prevPtr) == 0 && ALLOCATED(nextPtr) == 0) {
+        size_t totalSize = GETBLOCKSIZE(prevPtr) + GETBLOCKSIZE(nextPtr) + size;
+        void *prevHeader = (void *)GETHEADER(prevPtr);
+        void *nextFooter = (void *)GETFOOTER(nextPtr);
+        *(size_t *)prevHeader = *(size_t *)nextFooter = totalSize;
+    } else if(ALLOCATED(prevPtr) == 1 && ALLOCATED(nextPtr) == 0) {
+        *(size_t *)ptr = *(size_t *)GETFOOTER(nextPtr) = (size + GETBLOCKSIZE(nextPtr));
+    } else if(ALLOCATED(prevPtr) == 0 && ALLOCATED(nextPtr) == 1) {
+        *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = (size + GETBLOCKSIZE(prevPtr));
+    } else {
+        *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
     }
 }
 
