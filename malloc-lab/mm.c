@@ -67,11 +67,15 @@ inline static void set_blocksize_a(void* ptr, size_t size) {
     *(size_t *)ptr = *(size_t *)((char *)ptr + size - SIZE_T_SIZE) = size | 1;
 }
 
+static void *rover_pointer;
+
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    // rover_pointer = mem_heap_lo();
+    rover_pointer = NULL;
     return 0;
 }
 
@@ -86,13 +90,43 @@ void *mm_malloc(size_t size)
     int newsize = ALIGN(size + SIZE_T_SIZE*2); // size(payload) + SIZE_T_SIZE(header) + SIZE_T_SIZE(footer)
     
     // find available freed block
-    void *p = mem_heap_lo();
+    void *p = rover_pointer;
+    if(p == NULL || mem_heap_hi() < mem_heap_lo()) {
+        // 가용 가능한 블럭을 못 찾으면
+        p = mem_sbrk(newsize); // mem_brk을 newsize만큼 increase시킨다. 시작 지점 반환
+        if (p == (void *)-1)
+            return NULL;
+        else 
+        {
+            set_blocksize_a(p, newsize);
+            rover_pointer = p;
+            return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
+        }
+    }
     // 끝에 도달할 때 까지, freed block이면서 해당 블록이 할당될 사이즈보다 크거나 같을때까지 반복
     while(p <= mem_heap_hi() && ((*(size_t *)p & 1) || (*(size_t *)p & ~0x7) < (size_t)newsize)) {
         p = GETNEXTBLOCK(p); // block jump
     }
-    
+    int found = 1;
     if(p > mem_heap_hi()) {
+        p = mem_heap_lo();
+         if(rover_pointer == NULL) {
+            rover_pointer = mem_heap_lo();
+            found = 0;
+        } else {
+            while (p <= mem_heap_hi() && ((*(size_t *)p & 1) || (*(size_t *)p & ~0x7) < (size_t)newsize))
+            {
+                if(p >= rover_pointer) {
+                    found = 0;
+                    break;
+                }
+                /* code */
+                p = GETNEXTBLOCK(p); // block jump
+            }
+        }
+    }
+    
+    if(found == 0) {
         // 가용 가능한 블럭을 못 찾으면
         p = mem_sbrk(newsize); // mem_brk을 newsize만큼 increase시킨다. 시작 지점 반환
         if (p == (void *)-1)
@@ -100,6 +134,7 @@ void *mm_malloc(size_t size)
         else
         {
             set_blocksize_a(p, newsize);
+            rover_pointer = p;
             return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
         }
     } else {
@@ -109,6 +144,7 @@ void *mm_malloc(size_t size)
             void* next_p = (char *)p + newsize;
             set_blocksize(next_p, prev_size - newsize);
         }
+        rover_pointer = p;
         return (void *)((char *)p + SIZE_T_SIZE); // header를 점프한(8byte jump) 지점을 반환
     }  
 }
@@ -118,6 +154,9 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+    /*
+    TODO: header가 첫 번째 포인터이면 예외 처리 못 함. 이거를 이전 깃에서도 적용해야함
+    */
     if(ptr == NULL) return;
     ptr = ((char*)ptr - SIZE_T_SIZE); // 포인터를 뒤로 가서 header를 가리키기
 
@@ -125,7 +164,19 @@ void mm_free(void *ptr)
     void* prevPtr = (size_t *)ptr - 1; // 이전 블록 footer 
 
     void* nextPtr = (char *)ptr + size; // 다음 블록 시작 지점
-
+    if(prevPtr < mem_heap_lo()) {
+        if(nextPtr > mem_heap_hi()) {
+            *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
+        } else {
+            if(ALLOCATED(nextPtr) == 0) {
+                size_t total_size = size + GETBLOCKSIZE(nextPtr);
+                *(size_t *)ptr = *(size_t *)GETFOOTER(nextPtr) = total_size;
+            } else {
+                *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
+            }
+        }
+        return;
+    }
     if(nextPtr > mem_heap_hi()) {
         if(ALLOCATED(prevPtr) == 0) {
             *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = size + GETBLOCKSIZE(prevPtr);
