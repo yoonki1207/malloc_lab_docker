@@ -125,7 +125,19 @@ void mm_free(void *ptr)
     void* prevPtr = (size_t *)ptr - 1; // 이전 블록 footer 
 
     void* nextPtr = (char *)ptr + size; // 다음 블록 시작 지점
-
+    if(prevPtr < mem_heap_lo()) {
+        if(nextPtr > mem_heap_hi()) {
+            *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
+        } else {
+            if(ALLOCATED(nextPtr) == 0) {
+                size_t total_size = size + GETBLOCKSIZE(nextPtr);
+                *(size_t *)ptr = *(size_t *)GETFOOTER(nextPtr) = total_size;
+            } else {
+                *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
+            }
+        }
+        return;
+    }
     if(nextPtr > mem_heap_hi()) {
         if(ALLOCATED(prevPtr) == 0) {
             *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = size + GETBLOCKSIZE(prevPtr);
