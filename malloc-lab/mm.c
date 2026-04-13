@@ -111,17 +111,16 @@ void *mm_malloc(size_t size)
     if(p > mem_heap_hi()) {
         p = mem_heap_lo();
          if(rover_pointer == NULL) {
-            rover_pointer = mem_heap_lo();
             found = 0;
         } else {
             while (p <= mem_heap_hi() && ((*(size_t *)p & 1) || (*(size_t *)p & ~0x7) < (size_t)newsize))
             {
+                /* code */
+                p = GETNEXTBLOCK(p); // block jump
                 if(p >= rover_pointer) {
                     found = 0;
                     break;
                 }
-                /* code */
-                p = GETNEXTBLOCK(p); // block jump
             }
         }
     }
@@ -129,8 +128,10 @@ void *mm_malloc(size_t size)
     if(found == 0) {
         // 가용 가능한 블럭을 못 찾으면
         p = mem_sbrk(newsize); // mem_brk을 newsize만큼 increase시킨다. 시작 지점 반환
-        if (p == (void *)-1)
+        if (p == (void *)-1) {
+            rover_pointer = mem_heap_lo();
             return NULL;
+        }
         else
         {
             set_blocksize_a(p, newsize);
@@ -139,9 +140,11 @@ void *mm_malloc(size_t size)
         }
     } else {
         size_t prev_size = *(size_t *)p & ~0x7; // freed 블록 사이즈 계산
-        set_blocksize_a(p, newsize);
-        if(prev_size > newsize) {
+        if(prev_size - newsize < SIZE_T_SIZE * 2) { // freed 블록 최소 기준 불만족시
+            set_blocksize_a(p, prev_size);
+        } else {
             void* next_p = (char *)p + newsize;
+            set_blocksize_a(p, newsize);
             set_blocksize(next_p, prev_size - newsize);
         }
         rover_pointer = p;
@@ -154,9 +157,6 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
-    /*
-    TODO: header가 첫 번째 포인터이면 예외 처리 못 함. 이거를 이전 깃에서도 적용해야함
-    */
     if(ptr == NULL) return;
     ptr = ((char*)ptr - SIZE_T_SIZE); // 포인터를 뒤로 가서 header를 가리키기
 
@@ -171,6 +171,7 @@ void mm_free(void *ptr)
             if(ALLOCATED(nextPtr) == 0) {
                 size_t total_size = size + GETBLOCKSIZE(nextPtr);
                 *(size_t *)ptr = *(size_t *)GETFOOTER(nextPtr) = total_size;
+                rover_pointer = ptr;
             } else {
                 *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
             }
@@ -180,6 +181,7 @@ void mm_free(void *ptr)
     if(nextPtr > mem_heap_hi()) {
         if(ALLOCATED(prevPtr) == 0) {
             *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = size + GETBLOCKSIZE(prevPtr);
+            rover_pointer = GETHEADER(prevPtr);
         } else {
             *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
         }
@@ -190,10 +192,13 @@ void mm_free(void *ptr)
         void *prevHeader = (void *)GETHEADER(prevPtr);
         void *nextFooter = (void *)GETFOOTER(nextPtr);
         *(size_t *)prevHeader = *(size_t *)nextFooter = totalSize;
+        rover_pointer = prevHeader;
     } else if(ALLOCATED(prevPtr) == 1 && ALLOCATED(nextPtr) == 0) {
         *(size_t *)ptr = *(size_t *)GETFOOTER(nextPtr) = (size + GETBLOCKSIZE(nextPtr));
+        rover_pointer = ptr;
     } else if(ALLOCATED(prevPtr) == 0 && ALLOCATED(nextPtr) == 1) {
         *(size_t *)GETHEADER(prevPtr) = *(size_t *)GETFOOTER(ptr) = (size + GETBLOCKSIZE(prevPtr));
+        rover_pointer = GETHEADER(prevPtr);
     } else {
         *(size_t *)ptr = *(size_t *)GETFOOTER(ptr) = size;
     }
